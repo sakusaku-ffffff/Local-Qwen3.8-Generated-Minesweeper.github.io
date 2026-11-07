@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>マインスイーパー</title>
+<style>
+  :root { --cell: 32px; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "Segoe UI", "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif;
+    background: #1e2430;
+    color: #e8ecf4;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+  }
+  .game {
+    background: #2a3242;
+    border-radius: 12px;
+    padding: 18px;
+    box-shadow: 0 10px 30px rgba(0,0,0,.45);
+    max-width: 100%;
+    overflow-x: auto;
+  }
+  h1 { font-size: 20px; text-align: center; margin-bottom: 14px; letter-spacing: 3px; }
+  .topbar {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    background: #232a38; border-radius: 8px; padding: 8px 12px; margin-bottom: 14px;
+  }
+  .counter {
+    font-family: Consolas, "Courier New", monospace;
+    font-size: 20px; font-weight: bold;
+    background: #10141c; color: #ff5252;
+    border-radius: 6px; padding: 5px 8px; min-width: 72px; text-align: center; letter-spacing: 2px;
+  }
+  #reset {
+    font-size: 24px; width: 44px; height: 44px;
+    border-radius: 8px; border: none; background: #3a4560; cursor: pointer;
+    transition: transform .1s, background .15s; line-height: 1;
+  }
+  #reset:hover { background: #46537a; transform: scale(1.08); }
+  select {
+    background: #10141c; color: #e8ecf4; border: none;
+    border-radius: 6px; padding: 6px 8px; font-size: 13px; cursor: pointer;
+  }
+  #board {
+    display: grid; gap: 2px;
+    background: #10141c; padding: 6px; border-radius: 8px;
+    width: max-content; margin: 0 auto;
+    touch-action: none;
+  }
+  .cell {
+    width: var(--cell); height: var(--cell);
+    background: #4a5878; border-radius: 5px;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: bold; font-size: calc(var(--cell) * .55);
+    cursor: pointer; user-select: none; -webkit-user-select: none;
+  }
+  .cell:not(.revealed):hover { background: #5a6a90; }
+  .cell.revealed { background: #2c3448; cursor: default; }
+  .cell.mine { background: #7e2a33; }
+  .cell.exploded { background: #e53935; }
+  .cell.wrongflag { background: #6b4450; }
+  .n1{color:#4da3ff}.n2{color:#5fd068}.n3{color:#ff6b57}.n4{color:#b39dff}
+  .n5{color:#ffb84d}.n6{color:#4dd0c7}.n7{color:#f0f0f0}.n8{color:#a8b2c8}
+  .hint { text-align: center; font-size: 12px; color: #8fa0bf; margin-top: 14px; line-height: 1.8; }
+</style>
+</head>
+<body>
+<div class="game">
+  <h1>💣 マインスイーパー</h1>
+  <div class="topbar">
+    <select id="difficulty" title="難易度">
+      <option value="beginner">初級 (9×9 / 地雷10)</option>
+      <option value="intermediate">中級 (16×16 / 地雷40)</option>
+      <option value="expert">上級 (30×16 / 地雷99)</option>
+    </select>
+    <div class="counter" id="mineCounter">010</div>
+    <button id="reset" title="リセット">🙂</button>
+    <div class="counter" id="timer">000</div>
+  </div>
+  <div id="board"></div>
+  <p class="hint">左クリック: マスを開く / 右クリック(スマホは長押し): フラグを置く<br>開いた数字をクリック: 周囲を一括で開く(コード)</p>
+</div>
+<script>
+"use strict";
+const DIFFICULTIES = {
+  beginner:     { rows: 9,  cols: 9,  mines: 10 },
+  intermediate: { rows: 16, cols: 16, mines: 40 },
+  expert:       { rows: 16, cols: 30, mines: 99 }
+};
+
+const boardEl = document.getElementById("board");
+const timerEl = document.getElementById("timer");
+const mineEl  = document.getElementById("mineCounter");
+const resetBtn = document.getElementById("reset");
+const diffSel  = document.getElementById("difficulty");
+
+let rows, cols, mines, grid, dom;
+let minePlaced, gameOver, revealedCount, flags;
+let seconds, timerId = null;
+
+function pad3(n) {
+  if (n < 0) return "-" + String(Math.min(99, -n)).padStart(2, "0");
+  return String(Math.min(999, n)).padStart(3, "0");
+}
+
+function neighbors(r, c) {
+  const out = [];
+  for (let dr = -1; dr <= 1; dr++)
+    for (let dc = -1; dc <= 1; dc++) {
+      if (dr === 0 && dc === 0) continue;
+      const nr = r + dr, nc = c + dc;
+      if (nr >= 0 && nr < rows && nc >= 0 && nc < cols) out.push([nr, nc]);
+    }
+  return out;
+}
+
+function init() {
+  const d = DIFFICULTIES[diffSel.value];
+  rows = d.rows; cols = d.cols; mines = d.mines;
+  grid = Array.from({ length: rows }, () =>
+    Array.from({ length: cols }, () => ({ mine: false, revealed: false, flagged: false, count: 0 }))
+  );
+  minePlaced = false; gameOver = false; revealedCount = 0; flags = 0; seconds = 0;
+  stopTimer();
+  timerEl.textContent = "000";
+  mineEl.textContent = pad3(mines);
+  resetBtn.textContent = "🙂";
+  document.documentElement.style.setProperty("--cell", cols >= 25 ? "24px" : "32px");
+  boardEl.style.gridTemplateColumns = `repeat(${cols}, var(--cell))`;
+  buildBoard();
+}
+
+function buildBoard() {
+  boardEl.innerHTML = "";
+  dom = [];
+  for (let r = 0; r < rows; r++) {
+    const rowDom = [];
+    for (let c = 0; c < cols; c++) {
+      const el = document.createElement("div");
+      el.className = "cell";
+      attachEvents(el, r, c);
+      boardEl.appendChild(el);
+      rowDom.push(el);
+    }
+    dom.push(rowDom);
+  }
+}
+
+function attachEvents(el, r, c) {
+  let pressTimer = null;
+  el.addEventListener("click", () => {
+    if (gameOver) return;
+    const cell = grid[r][c];
+    if (cell.revealed && cell.count > 0) chord(r, c);
+    else reveal(r, c);
+  });
+  el.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    toggleFlag(r, c);
+  });
+  // スマホ: 長押しでフラグ
+  el.addEventListener("touchstart", () => {
+    if (gameOver) return;
+    pressTimer = setTimeout(() => toggleFlag(r, c), 500);
+  }, { passive: true });
+  el.addEventListener("touchmove", () => clearTimeout(pressTimer), { passive: true });
+  el.addEventListener("touchend", () => clearTimeout(pressTimer));
+}
+
+function placeMines(sr, sc) {
+  const safe = new Set(neighbors(sr, sc).map(([nr, nc]) => nr * cols + nc));
+  safe.add(sr * cols + sc);
+  const pool = [];
+  for (let i = 0; i < rows * cols; i++) if (!safe.has(i)) pool.push(i);
+  for (let i = pool.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [pool[i], pool[j]] = [pool[j], pool[i]];
+  }
+  for (let k = 0; k < mines; k++) {
+    const idx = pool[k];
+    grid[Math.floor(idx / cols)][idx % cols].mine = true;
+  }
+  for (let r = 0; r < rows; r++)
+    for (let c = 0; c < cols; c++)
+      if (grid[r][c].mine)
+        for (const [nr, nc] of neighbors(r, c)) grid[nr][nc].count++;
+}
+
+function reveal(r, c) {
+  const cell = grid[r][c];
+  if (gameOver || cell.flagged || cell.revealed) return;
+  if (!minePlaced) {
+    placeMines(r, c);
+    minePlaced = true;
+    startTimer();
+  }
+  if (cell.mine) { lose(r, c); return; }
+  floodReveal(r, c);
+  checkWin();
+}
+
+function floodReveal(r, c) {
+  const stack = [[r, c]];
+  while (stack.length) {
+    const [cr, cc] = stack.pop();
+    const cell = grid[cr][cc];
+    if (cell.revealed || cell.flagged || cell.mine) continue;
+    cell.revealed = true;
+    revealedCount++;
+    paint(cr, cc);
+    if (cell.count === 0)
+      for (const [nr, nc] of neighbors(cr, cc)) {
+        const n = grid[nr][nc];
+        if (!n.revealed && !n.flagged) stack.push([nr, nc]);
+      }
+  }
+}
+
+function chord(r, c) {
+  const cell = grid[r][c];
+  if (gameOver || !cell.revealed || cell.count === 0) return;
+  let flagged = 0;
+  for (const [nr, nc] of neighbors(r, c)) if (grid[nr][nc].flagged) flagged++;
+  if (flagged !== cell.count) return;
+  let hitMine = false;
+  for (const [nr, nc] of neighbors(r, c)) {
+    const n = grid[nr][nc];
+    if (!n.flagged && !n.revealed) {
+      if (n.mine) hitMine = true;
+      else floodReveal(nr, nc);
+    }
+  }
+  if (hitMine) lose(null, null);
+  else checkWin();
+}
+
+function toggleFlag(r, c) {
+  const cell = grid[r][c];
+  if (gameOver || cell.revealed) return;
+  cell.flagged = !cell.flagged;
+  flags += cell.flagged ? 1 : -1;
+  paint(r, c);
+  mineEl.textContent = pad3(mines - flags);
+}
+
+function paint(r, c) {
+  const cell = grid[r][c];
+  const el = dom[r][c];
+  el.className = "cell";
+  el.textContent = "";
+  if (cell.flagged) { el.textContent = "🚩"; return; }
+  if (cell.revealed) {
+    el.classList.add("revealed");
+    if (cell.mine) el.textContent = "💣";
+    else if (cell.count > 0) {
+      el.textContent = cell.count;
+      el.classList.add("n" + cell.count);
+    }
+  }
+}
+
+function lose(hitR, hitC) {
+  gameOver = true;
+  stopTimer();
+  resetBtn.textContent = "😵";
+  for (let r = 0; r < rows; r++)
+    for (let c = 0; c < cols; c++) {
+      const cell = grid[r][c];
+      if (cell.mine && !cell.flagged) {
+        paint(r, c);
+        dom[r][c].classList.add("mine");
+        if (hitR === r && hitC === c) dom[r][c].classList.add("exploded");
+      } else if (!cell.mine && cell.flagged) {
+        const el = dom[r][c];
+        el.classList.add("wrongflag");
+        el.textContent = "❌";
+      }
+    }
+}
+
+function checkWin() {
+  if (revealedCount === rows * cols - mines) {
+    gameOver = true;
+    stopTimer();
+    resetBtn.textContent = "😎";
+    for (let r = 0; r < rows; r++)
+      for (let c = 0; c < cols; c++)
+        if (grid[r][c].mine) { grid[r][c].flagged = true; paint(r, c); }
+    mineEl.textContent = "000";
+  }
+}
+
+function startTimer() {
+  stopTimer();
+  timerId = setInterval(() => {
+    seconds = Math.min(999, seconds + 1);
+    timerEl.textContent = pad3(seconds);
+  }, 1000);
+}
+
+function stopTimer() {
+  if (timerId !== null) { clearInterval(timerId); timerId = null; }
+}
+
+resetBtn.addEventListener("click", init);
+diffSel.addEventListener("change", init);
+boardEl.addEventListener("contextmenu", (e) => e.preventDefault());
+
+init();
+</script>
+</body>
+</html>
